@@ -100,7 +100,7 @@ class Ui_TCP(QDialog):
         # 创建图片解析接口
         self.out_dir = None
         self.pict_man = pict
-        self.file = None
+        self.savefile = None
 
         # 创建TCP/UDP套接字
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -532,6 +532,7 @@ class Ui_TCP(QDialog):
         """
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 5*1024*1024)
         try:
             self.address = (str(self.lineEdit_ip_send.text()), int(self.lineEdit_port.text()))
         except Exception as ret:
@@ -546,7 +547,6 @@ class Ui_TCP(QDialog):
                 self.msg = '无法连接目标服务器\n'
                 self.signal_write_msg.emit("write")
             else:
-                print("enter\n")
                 self.pict_man.pict_start()
                 self.client_th = threading.Thread(target=self.tcp_ty_client_concurrency)
                 self.client_th.start()
@@ -562,12 +562,13 @@ class Ui_TCP(QDialog):
         # 关键字符串解析
         ty_str = data_p["name"]
         ty_size = data_p["size"]
+        ty_type = data_p["fortype"]
         if ty_str == "pict":
-            return 1, ty_size
+            return 1, ty_type, ty_size
         elif ty_str == "pcm":
-            return 2, ty_size
+            return 2, ty_type, ty_size
         else :
-            return 3, ty_size
+            return 3, ty_type, ty_size
 
 
 
@@ -576,6 +577,7 @@ class Ui_TCP(QDialog):
         ret_sta = 0
         data_size = 0
         rcv_size = 0
+        rcv_fortype = 0
         file_last = None
         """
         功能函数，用于TCP客户端创建子线程的方法，阻塞式接收
@@ -589,32 +591,40 @@ class Ui_TCP(QDialog):
                         self.msg = '选择保存路径!\n'
                         self.signal_write_msg.emit("write")
                         continue
-                    msg = recv_msg.decode('utf-8')
-                    ret, size = self.tcp_ty_parse(msg)
-                    ret_sta = int(ret)
-                    data_size = int(size)
-                    # print(ret_sta, data_size)
-                    first_pack_isflag = True
-                    # 创建保存的文件路径及名字
-                    if self.file is None:
-                        if ret_sta == 1:
-                            self.out_dir = str(self.dir) + "/" + str(time.time()) + ".jpg"
-                        elif ret_sta == 2:
-                            self.out_dir = str(self.dir) + '/' + str(time.time()) + ".pcm"
-                        # print(self.out_dir)
-                        self.file = open(self.out_dir, "wb")
-                        self.msg = 'from IP:{} port:{}: len {} rcv_start\n'.format(self.address[0], self.address[1],
+                    try:
+                        msg = recv_msg.decode('utf-8')
+                    except:
+                        continue
+                    else:
+                        ret, fortype, size = self.tcp_ty_parse(msg)
+                        ret_sta = int(ret)
+                        data_size = int(size)
+                        rcv_fortype = int(fortype)
+                        # print(ret_sta, data_size)
+                        first_pack_isflag = True
+                        # 创建保存的文件路径及名字
+                        if self.savefile is None:
+                            if ret_sta == 1:
+                                if rcv_fortype == 0:
+                                    self.out_dir = str(self.dir) + "/" + str(time.time()) + ".yuv"
+                                elif rcv_fortype == 1:
+                                    self.out_dir = str(self.dir) + "/" + str(time.time()) + ".jpg"
+                            elif ret_sta == 2:
+                                self.out_dir = str(self.dir) + '/' + str(time.time()) + ".pcm"
+                            # print(self.out_dir)
+                            self.savefile = open(self.out_dir, "wb")
+                            self.msg = 'from IP:{} port:{}: len {} rcv_start\n'.format(self.address[0], self.address[1],
                                                                                    str(size))
-                        self.signal_write_msg.emit("write")
+                            self.signal_write_msg.emit("write")
                         continue
 
-                if ret_sta == 1 and first_pack_isflag:
-                    self.file.write(recv_msg)
+                if first_pack_isflag:
+                    self.savefile.write(recv_msg)
                     rcv_size += len(recv_msg)
                     # print(len(recv_msg), rcv_size, data_size)
                     if rcv_size == data_size :
-                        self.file.close()
-                        self.file = None
+                        self.savefile.close()
+                        self.savefile = None
                         self.rce_data(self.out_dir, self.address)
                         first_pack_isflag = False
                         self.msg = 'from IP:{} port:{}: len {} rcv_end\n'.format(self.address[0], self.address[1], str(rcv_size))
@@ -628,6 +638,14 @@ class Ui_TCP(QDialog):
             else:
                 self.tcp_socket.close()
                 self.reset()
+
+                if self.savefile is not None:
+                    self.savefile.close()
+                    self.savefile = None
+
+                first_pack_isflag = False
+                ret_sta = 0
+                print(ret_sta, first_pack_isflag)
                 self.msg = '从服务器断开连接\n'
                 self.signal_write_msg.emit("write")
                 break
@@ -906,7 +924,6 @@ class PictDisplay:
 
     def pict_start(self):
         self.path = None
-        print('PictDisplay start!')
         self.save_display_th = None
         self.detail_pict_queue = queue.Queue(maxsize=128);
         # 创建线程
@@ -924,12 +941,14 @@ class PictDisplay:
                 pict.show()
             elif 'pcm' in pict_info:
                 continue
+            elif 'yuv' in pict_info:
+                continue
 
     def pict_save(self, path):
         # self.path = path
         # pict = Image.open(self.path)
         spath = path
-        self.detail_pict_queue.put(spath)
+        # self.detail_pict_queue.put(spath)
 
         # print(spath)
         # pict.save(spath)

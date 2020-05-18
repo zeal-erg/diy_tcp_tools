@@ -21,6 +21,7 @@ import ctypes
 import inspect
 import re
 import time
+from threading import Timer
 
 import json
 import binascii
@@ -101,7 +102,8 @@ class Ui_TCP(QDialog):
         self.out_dir = None
         self.pict_man = pict
         self.savefile = None
-
+        self.first_pack_isflag = None
+        self.client_th_timeout = None
         # 创建TCP/UDP套接字
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -428,6 +430,7 @@ class Ui_TCP(QDialog):
 
                 self.st.stop_thread(self.sever_th)
                 self.st.stop_thread(self.client_th)
+                self.st.stop_thread(self.client_th_timeout)
                 self.pict_man.pict_exit()
             except Exception as ret:
                 pass
@@ -550,6 +553,8 @@ class Ui_TCP(QDialog):
                 self.pict_man.pict_start()
                 self.client_th = threading.Thread(target=self.tcp_ty_client_concurrency)
                 self.client_th.start()
+                self.client_th_timeout = threading.Thread(target=self.tcp_ty_client_timeout)
+                self.client_th_timeout.start()
                 self.msg = 'TCP客户端已连接IP:%s端口:%s\n' % self.address
                 self.signal_write_msg.emit("write")
 
@@ -573,7 +578,7 @@ class Ui_TCP(QDialog):
 
 
     def tcp_ty_client_concurrency(self):
-        first_pack_isflag = False
+        self.first_pack_isflag = False
         ret_sta = 0
         data_size = 0
         rcv_size = 0
@@ -586,7 +591,7 @@ class Ui_TCP(QDialog):
         while True:
             recv_msg = self.tcp_socket.recv(1024)
             if recv_msg:
-                if first_pack_isflag is False:
+                if self.first_pack_isflag is False:
                     if self.dir is None:
                         self.msg = '选择保存路径!\n'
                         self.signal_write_msg.emit("write")
@@ -601,7 +606,8 @@ class Ui_TCP(QDialog):
                         data_size = int(size)
                         rcv_fortype = int(fortype)
                         # print(ret_sta, data_size)
-                        first_pack_isflag = True
+                        self.first_pack_isflag = True
+                        rcv_size = 0
                         # 创建保存的文件路径及名字
                         if self.savefile is None:
                             if ret_sta == 1:
@@ -616,9 +622,11 @@ class Ui_TCP(QDialog):
                             self.msg = 'from IP:{} port:{}: len {} rcv_start\n'.format(self.address[0], self.address[1],
                                                                                    str(size))
                             self.signal_write_msg.emit("write")
+
+                            # print("rcv %s" % str(time.time()))
                         continue
 
-                if first_pack_isflag:
+                if self.first_pack_isflag:
                     self.savefile.write(recv_msg)
                     rcv_size += len(recv_msg)
                     # print(len(recv_msg), rcv_size, data_size)
@@ -626,7 +634,7 @@ class Ui_TCP(QDialog):
                         self.savefile.close()
                         self.savefile = None
                         self.rce_data(self.out_dir, self.address)
-                        first_pack_isflag = False
+                        self.first_pack_isflag = False
                         self.msg = 'from IP:{} port:{}: len {} rcv_end\n'.format(self.address[0], self.address[1], str(rcv_size))
                         rcv_size = 0
                         self.signal_write_msg.emit("write")
@@ -643,12 +651,28 @@ class Ui_TCP(QDialog):
                     self.savefile.close()
                     self.savefile = None
 
-                first_pack_isflag = False
+                self.first_pack_isflag = False
                 ret_sta = 0
-                print(ret_sta, first_pack_isflag)
+                # print(ret_sta, self.first_pack_isflag)
                 self.msg = '从服务器断开连接\n'
                 self.signal_write_msg.emit("write")
                 break
+
+    def tcp_ty_client_timeout(self):
+        while True:
+            if self.first_pack_isflag:
+                time.sleep(3.5)
+                if self.first_pack_isflag is False:
+                    continue
+
+                # print("timeout ...")
+                # print("rcv %s" % str(time.time()))
+                if self.savefile is not None:
+                    self.savefile.close()
+                    self.savefile = None
+                    self.first_pack_isflag = False
+            else:
+                time.sleep(1)
 
     def tcp_client_concurrency(self):
         """
